@@ -8,7 +8,7 @@
 #include <sstream>    
 #include <stdexcept>  
 #include <limits>     
-#include <windows.h>
+#include <clocale>    
 
 
 using Matrix = std::vector<std::vector<double>>;
@@ -28,7 +28,6 @@ void printMatrix(const Matrix& mat, const std::string& title = "", int precision
         return;
     }
 
-  
     int max_width = 0;
     for (int i = 0; i < n_rows; ++i) {
         for (int j = 0; j < n_cols; ++j) {
@@ -40,10 +39,8 @@ void printMatrix(const Matrix& mat, const std::string& title = "", int precision
             }
         }
     }
-    
     max_width += 2;
 
-   
     for (int i = 0; i < n_rows; ++i) {
         for (int j = 0; j < n_cols; ++j) {
             std::cout << std::setw(max_width) << std::fixed << std::setprecision(precision) << mat[i][j];
@@ -55,45 +52,44 @@ void printMatrix(const Matrix& mat, const std::string& title = "", int precision
 
 const double ZERO_THRESHOLD = 1e-9;
 
+
+// Реализация LU разложения
+
+
 bool lu_decomposition_openmp(Matrix& a) {
     const int n = a.size();
-    if (n == 0) return true; 
+    if (n == 0) return true;
 
- 
     for (int k = 0; k < n; ++k) {
-
+        
 #pragma omp parallel for
         for (int j = k; j < n; ++j) {
             double sum_U = 0.0;
-    
             for (int p = 0; p < k; ++p) {
-         
                 sum_U += a[k][p] * a[p][j];
             }
-            
             a[k][j] = a[k][j] - sum_U;
         }
+
+     
         if (std::fabs(a[k][k]) < ZERO_THRESHOLD) {
             std::cerr << "\nОшибка (Параллельная версия): Обнаружен нулевой или близкий к нулю диагональный элемент a["
                 << k << "][" << k << "] = " << a[k][k]
                 << ".\nLU-разложение в данной реализации (без пивотинга) невозможно." << std::endl;
-                return false; 
+                return false;
         }
 
-
+    
 #pragma omp parallel for
         for (int i = k + 1; i < n; ++i) {
             double sum_L = 0.0;
-         
             for (int p = 0; p < k; ++p) {
-              
                 sum_L += a[i][p] * a[p][k];
             }
-           
-            a[i][k] = (a[i][k] - sum_L) / a[k][k]; 
-        } 
+            a[i][k] = (a[i][k] - sum_L) / a[k][k];
+        }
     }
-    return true; 
+    return true;
 }
 
 bool lu_decomposition_sequential(Matrix& a) {
@@ -101,6 +97,7 @@ bool lu_decomposition_sequential(Matrix& a) {
     if (n == 0) return true;
 
     for (int k = 0; k < n; ++k) {
+      
         for (int j = k; j < n; ++j) {
             double sum = 0.0;
             for (int p = 0; p < k; ++p) {
@@ -116,6 +113,7 @@ bool lu_decomposition_sequential(Matrix& a) {
                 return false;
         }
 
+       
         for (int i = k + 1; i < n; ++i) {
             double sum = 0.0;
             for (int p = 0; p < k; ++p) {
@@ -127,85 +125,89 @@ bool lu_decomposition_sequential(Matrix& a) {
     return true;
 }
 
+
 int main() {
+
     setlocale(LC_ALL, "Russian");
-    
+  
+
     int n; 
+
     std::cout << "Введите размер квадратной матрицы n: ";
     std::cin >> n;
-   
+
     if (!std::cin || n <= 0) {
         std::cerr << "Ошибка: Некорректный ввод. Размер матрицы должен быть положительным целым числом." << std::endl;
-        return 1; 
+        return 1;
     }
 
     std::cout << "Генерация матрицы " << n << "x" << n << "..." << std::endl;
+    std::srand(42);
 
-
-    std::srand(42); 
-
- 
     Matrix A_omp(n, std::vector<double>(n));
-    Matrix A_seq(n, std::vector<double>(n)); 
+    Matrix A_seq(n, std::vector<double>(n));
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
-          
             A_omp[i][j] = static_cast<double>(std::rand() % 100 + 1);
-            A_seq[i][j] = A_omp[i][j]; 
+            A_seq[i][j] = A_omp[i][j];
         }
     }
+
     if (n <= 50) {
         printMatrix(A_omp, "Исходная матрица A");
     }
 
+  
     std::cout << "\n--- Параллельное LU-разложение (OpenMP) ---" << std::endl;
     auto start_time_omp = std::chrono::high_resolution_clock::now();
-    bool success_omp = lu_decomposition_openmp(A_omp); 
+    bool success_omp = lu_decomposition_openmp(A_omp);
     auto end_time_omp = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration_omp = end_time_omp - start_time_omp;
+
     if (success_omp) {
         std::cout << "Параллельное разложение завершено успешно." << std::endl;
-        if (n <= 50) { 
+        if (n <= 50) {
             printMatrix(A_omp, "Матрица после LU-разложения (L\\U)");
         }
-        std::cout << "Время выполнения (OpenMP): " << duration_omp.count() << " секунд" << std::endl;
+        std::cout << "Время выполнения (OpenMP): "
+            << std::fixed << std::setprecision(9) 
+            << duration_omp.count() << " секунд" << std::endl;
     }
     else {
         std::cout << "Параллельное разложение НЕ УДАЛОСЬ." << std::endl;
- 
     }
 
-
+   
     std::cout << "\n--- Последовательное LU-разложение ---" << std::endl;
     auto start_time_seq = std::chrono::high_resolution_clock::now();
-
-    bool success_seq = lu_decomposition_sequential(A_seq); 
-
+    bool success_seq = lu_decomposition_sequential(A_seq);
     auto end_time_seq = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration_seq = end_time_seq - start_time_seq;
 
     if (success_seq) {
         std::cout << "Последовательное разложение завершено успешно." << std::endl;
-        std::cout << "Время выполнения (Последовательно): " << duration_seq.count() << " секунд" << std::endl;
+        std::cout << "Время выполнения (Последовательно): "
+            << std::fixed << std::setprecision(9) 
+            << duration_seq.count() << " секунд" << std::endl;
     }
     else {
         std::cout << "Последовательное разложение НЕ УДАЛОСЬ." << std::endl;
     }
 
+    
     std::cout << "\n--- Результаты производительности ---" << std::endl;
-    if (success_omp && success_seq) { 
-        if (duration_omp.count() > 1e-9) { 
+    if (success_omp && success_seq) {
+        if (duration_omp.count() > 1e-9) {
             double speedup = duration_seq.count() / duration_omp.count();
             std::cout << "Ускорение (Последовательное время / Параллельное время): " << std::fixed << std::setprecision(2) << speedup << std::endl;
         }
         else {
             std::cout << "Параллельное время слишком мало для расчета ускорения." << std::endl;
         }
-
         int actual_threads = 0;
-#pragma omp parallel 
+#pragma omp parallel
         {
-#pragma omp master 
+#pragma omp master
             actual_threads = omp_get_num_threads();
         }
         std::cout << "Количество потоков, использованных OpenMP: " << actual_threads << std::endl;
@@ -214,6 +216,8 @@ int main() {
     else {
         std::cout << "Невозможно рассчитать ускорение, так как одна из версий разложения завершилась с ошибкой." << std::endl;
     }
+
     std::cout << "\nПрограмма завершена." << std::endl;
-    return 0; 
+    
+    return 0;
 }
