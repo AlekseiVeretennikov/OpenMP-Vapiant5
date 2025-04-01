@@ -1,0 +1,252 @@
+#include <iostream>
+#include <vector>
+#include <mpi.h>      
+#include <iomanip>    
+#include <cmath>      
+#include <chrono>     
+#include <cstdlib>    
+#include <sstream>    
+#include <stdexcept>  
+#include <limits>     
+
+
+using Matrix = std::vector<std::vector<double>>;
+const double ZERO_THRESHOLD = 1e-9;
+
+void printMatrix(const Matrix& mat, const std::string& title = "", int precision = 2) {
+    if (!title.empty()) {
+        std::cout << title << ":" << std::endl;
+    }
+    int n_rows = mat.size();
+    if (n_rows == 0) {
+        std::cout << "(Пустая матрица)" << std::endl;
+        return;
+    }
+    int n_cols = mat[0].size();
+    if (n_cols == 0) {
+        std::cout << "(Матрица с нулевым числом столбцов)" << std::endl;
+        return;
+    }
+
+    int max_width = 0;
+    for (int i = 0; i < n_rows; ++i) {
+        for (int j = 0; j < n_cols; ++j) {
+            std::stringstream temp_ss;
+            temp_ss << std::fixed << std::setprecision(precision) << mat[i][j];
+            int current_len = temp_ss.str().length();
+            if (current_len > max_width) {
+                max_width = current_len;
+            }
+        }
+    }
+    max_width += 2;
+
+    for (int i = 0; i < n_rows; ++i) {
+        for (int j = 0; j < n_cols; ++j) {
+            std::cout << std::setw(max_width) << std::fixed << std::setprecision(precision) << mat[i][j];
+        }
+        std::cout << std::endl;
+    }
+    std::cout << std::endl;
+}
+
+
+
+bool lu_decomposition_sequential(Matrix& a) {
+    const int n = a.size();
+    if (n == 0) return true;
+
+    for (int k = 0; k < n; ++k) {
+        for (int j = k; j < n; ++j) {
+            double sum = 0.0;
+            for (int p = 0; p < k; ++p) {
+                sum += a[k][p] * a[p][j];
+            }
+            a[k][j] = a[k][j] - sum;
+        }
+
+        if (std::fabs(a[k][k]) < ZERO_THRESHOLD) {
+            std::cerr << "\nОшибка (Последовательная версия): Обнаружен нулевой или близкий к нулю диагональный элемент a["
+                << k << "][" << k << "] = " << a[k][k]
+                << ".\nLU-разложение невозможно." << std::endl;
+                return false;
+        }
+
+        for (int i = k + 1; i < n; ++i) {
+            double sum = 0.0;
+            for (int p = 0; p < k; ++p) {
+                sum += a[i][p] * a[p][k];
+            }
+            a[i][k] = (a[i][k] - sum) / a[k][k];
+        }
+    }
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    int rank, size;
+    int n = 0;
+    Matrix A;
+    Matrix A_seq;
+    double start_time_mpi, end_time_mpi, time_mpi = 0.0, time_seq = 0.0;
+    bool success_mpi = true;
+    bool success_seq = true;
+
+   
+   setlocale(LC_ALL, "Russian");
+    
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+
+    if (rank == 0) {
+        std::cout << "Введите размер квадратной матрицы n: ";
+        std::cin >> n;
+        if (!std::cin || n <= 0) {
+            std::cerr << "Ошибка: Некорректный ввод. Размер должен быть > 0." << std::endl;
+            n = 0;
+        }
+        else {
+            std::cout << "Генерация матрицы " << n << "x" << n << " (процесс 0)..." << std::endl;
+            std::srand(42);
+            A.assign(n, std::vector<double>(n));
+            A_seq.assign(n, std::vector<double>(n));
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < n; ++j) {
+                    A[i][j] = static_cast<double>(std::rand() % 100 + 1);
+                    A_seq[i][j] = A[i][j];
+                }
+            }
+            if (n > 0 && n <= 50) {
+                printMatrix(A, "Исходная матрица A (процесс 0)");
+            }
+        }
+    }
+
+    MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (n <= 0) {
+        MPI_Finalize();
+        return 1;
+    }
+    if (rank != 0) {
+        A.assign(n, std::vector<double>(n));
+    }
+    for (int i = 0; i < n; ++i) {
+        MPI_Bcast(A[i].data(), n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+
+
+    if (rank == 0) {
+        std::cout << "\n--- Параллельное LU-разложение (MPI) ---" << std::endl;
+        std::cout << "Используется " << size << " процессов." << std::endl;
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    start_time_mpi = MPI_Wtime(); 
+
+    int error_flag = 0;
+    int global_error_flag = 0;
+
+    for (int k = 0; k < n && global_error_flag == 0; ++k) { 
+        int owner_rank = k % size;
+
+        if (rank == owner_rank) {
+            for (int j = k; j < n; ++j) {
+                double sum_U = 0.0;
+                for (int p = 0; p < k; ++p) {
+                    sum_U += A[k][p] * A[p][j];
+                }
+                A[k][j] = A[k][j] - sum_U;
+            }
+            if (std::fabs(A[k][k]) < ZERO_THRESHOLD) {
+                error_flag = 1;
+            }
+        }
+
+        MPI_Allreduce(&error_flag, &global_error_flag, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+        if (global_error_flag != 0) {
+            success_mpi = false;
+            if (rank == 0) { 
+                std::cerr << "\nОшибка (MPI, шаг k=" << k << "): Обнаружен нулевой диагональный элемент у процесса " << owner_rank << "." << std::endl;
+            }
+ 
+        }
+
+        MPI_Bcast(A[k].data(), n, MPI_DOUBLE, owner_rank, MPI_COMM_WORLD);
+
+      
+        if (global_error_flag == 0) {
+            for (int i = k + 1; i < n; ++i) {
+                if (i % size == rank) {
+                    double sum_L = 0.0;
+                    for (int p = 0; p < k; ++p) {
+                        sum_L += A[i][p] * A[p][k];
+                    }
+                    A[i][k] = (A[i][k] - sum_L) / A[k][k];
+                }
+            }
+        }
+        else {
+        }
+
+    } 
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    end_time_mpi = MPI_Wtime();
+    time_mpi = end_time_mpi - start_time_mpi;
+
+    if (rank == 0) {
+        if (success_mpi) {
+            std::cout << "Параллельное разложение (MPI) завершено успешно." << std::endl;
+            if (n <= 10) {
+                printMatrix(A, "Матрица после LU-разложения MPI (L\\U) (у процесса 0)");
+            }
+            std::cout << "Время выполнения (MPI): "
+                << std::fixed << std::setprecision(9) 
+                << time_mpi << " секунд" << std::endl;
+        }
+        else {
+            std::cout << "Параллельное разложение (MPI) НЕ УДАЛОСЬ (обнаружен нулевой диагональный элемент)." << std::endl;
+        }
+
+        std::cout << "\n--- Последовательное LU-разложение (на процессе 0) ---" << std::endl;
+        auto start_seq_ch = std::chrono::high_resolution_clock::now();
+        success_seq = lu_decomposition_sequential(A_seq);
+        auto end_seq_ch = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> duration_seq = end_seq_ch - start_seq_ch;
+        time_seq = duration_seq.count();
+
+        if (success_seq) {
+            std::cout << "Последовательное разложение завершено успешно." << std::endl;
+            std::cout << "Время выполнения (Последовательно): "
+                << std::fixed << std::setprecision(9) 
+                << time_seq << " секунд" << std::endl;
+        }
+        else {
+            std::cout << "Последовательное разложение НЕ УДАЛОСЬ." << std::endl;
+        }
+
+        std::cout << "\n--- Результаты производительности ---" << std::endl;
+        if (success_mpi && success_seq) {
+            if (time_mpi > 1e-12) { 
+                double speedup = time_seq / time_mpi;
+                std::cout << "Ускорение (Последовательное время / Параллельное время MPI): "
+                    << std::fixed << std::setprecision(2) << speedup << std::endl;
+            }
+            else {
+                std::cout << "Параллельное время MPI слишком мало для расчета ускорения." << std::endl;
+            }
+            std::cout << "Количество процессов MPI: " << size << std::endl;
+        }
+        else {
+            std::cout << "Невозможно рассчитать ускорение, так как одна из версий разложения завершилась с ошибкой." << std::endl;
+        }
+        std::cout << "\nПрограмма завершена." << std::endl;
+    }
+
+    MPI_Finalize();
+    return 0;
+}
