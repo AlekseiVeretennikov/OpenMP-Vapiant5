@@ -52,10 +52,6 @@ void printMatrix(const Matrix& mat, const std::string& title = "", int precision
 
 const double ZERO_THRESHOLD = 1e-9;
 
-
-// Реализация LU разложения
-
-
 bool lu_decomposition_openmp(Matrix& a) {
     const int n = a.size();
     if (n == 0) return true;
